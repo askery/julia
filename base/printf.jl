@@ -10,7 +10,8 @@ const SmallNumber = Union{SmallFloatingPoint,Base.BitInteger}
 
 function gen(s::AbstractString)
     args = []
-    blk = Expr(:block, :(local neg, pt, len, exp, do_out, args))
+    blk = Expr(:block, :(local neg, pt, len, exp, do_out, args, buf))
+    gotbuf = false
     for x in parse(s)
         if isa(x,AbstractString)
             push!(blk.args, :(print(out, $(length(x)==1 ? x[1] : x))))
@@ -24,6 +25,10 @@ function gen(s::AbstractString)
                 c=='s' ? gen_s :
                 c=='p' ? gen_p :
                          gen_d
+            if !gotbuf && c != 'c' && c != 's' && c != 'p'
+                push!(blk.args, :(buf = $Grisu.getbuf()))
+                gotbuf = true
+            end
             arg, ex = f(x...)
             push!(args, arg)
             push!(blk.args, ex)
@@ -212,8 +217,8 @@ function print_fixed_width(precision, pt, ndigits, trailingzeros=true)
 end
 
 # note: if print_fixed is changed, print_fixed_width should be changed accordingly
-function print_fixed(out, precision, pt, ndigits, trailingzeros=true)
-    pdigits = pointer(Grisu.getbuf())
+function print_fixed(out, precision, pt, ndigits, trailingzeros=true, buf = Grisu.getbuf())
+    pdigits = pointer(buf)
     if pt <= 0
         # 0.0dddd0
         print(out, '0')
@@ -346,7 +351,7 @@ function gen_d(flags::String, width::Int, precision::Int, c::Char)
         push!(blk.args, pad(width-1, zeros, '0'))
     end
     # print integer
-    push!(blk.args, :(unsafe_write(out, pointer($Grisu.getbuf()), pt)))
+    push!(blk.args, :(unsafe_write(out, pointer(buf), pt)))
     # print padding
     if padding !== nothing && '-' in flags
         push!(blk.args, pad(width-precision, padding, ' '))
@@ -403,9 +408,9 @@ function gen_f(flags::String, width::Int, precision::Int, c::Char)
     end
     # print digits
     if precision > 0
-        push!(blk.args, :(print_fixed(out,$precision,pt,len)))
+        push!(blk.args, :(print_fixed(out,$precision,pt,len,true,buf)))
     else
-        push!(blk.args, :(unsafe_write(out, pointer($Grisu.getbuf()), len)))
+        push!(blk.args, :(unsafe_write(out, pointer(buf), len)))
         push!(blk.args, :(while pt >= (len+=1) print(out,'0') end))
         '#' in flags && push!(blk.args, :(print(out, '.')))
     end
@@ -440,7 +445,7 @@ function gen_e(flags::String, width::Int, precision::Int, c::Char, inside_g::Boo
     if precision < 0; precision = 6; end
     ndigits = min(precision+1,length(Grisu.getbuf())-1)
     push!(blk.args, :((do_out, args) = ini_dec(out,$x,$ndigits, $flags, $width, $precision, $c)))
-    push!(blk.args, :(digits = $Grisu.getbuf()))
+    push!(blk.args, :(digits = buf))
     ifblk = Expr(:if, :do_out, Expr(:block))
     push!(blk.args, ifblk)
     blk = ifblk.args[2]
@@ -557,7 +562,7 @@ function gen_a(flags::String, width::Int, precision::Int, c::Char)
         ndigits = min(precision+1,length(Grisu.getbuf())-1)
         push!(blk.args, :((do_out, args) = $fn(out,$x,$ndigits, $flags, $width, $precision, $c)))
     end
-    push!(blk.args, :(digits = $Grisu.getbuf()))
+    push!(blk.args, :(digits = buf))
     ifblk = Expr(:if, :do_out, Expr(:block))
     push!(blk.args, ifblk)
     blk = ifblk.args[2]
@@ -800,7 +805,7 @@ function gen_g(flags::String, width::Int, precision::Int, c::Char)
                           $padexpr; end))
     end
     # finally print value
-    push!(blk.args, :(print_fixed(out,fprec,pt,len,$('#' in flags))))
+    push!(blk.args, :(print_fixed(out,fprec,pt,len,$('#' in flags),buf)))
     # print space padding
     if '-' in flags
         padexpr = dynamic_pad(:width, :padding, ' ')
